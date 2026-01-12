@@ -37,17 +37,6 @@
 #include <math.h>
 
 /*
- * Fallback definitions for PostgreSQL 18+ which removed HAVE_LONG_INT_64
- * and HAVE_LONG_LONG_INT_64 macros. On all modern platforms, long long
- * is guaranteed to be at least 64 bits per C99.
- */
-#if SIZEOF_SIZE_T == 8
-#if !defined(HAVE_LONG_INT_64) && !defined(HAVE_LONG_LONG_INT_64)
-#define HAVE_LONG_LONG_INT_64 1
-#endif
-#endif
-
-/*
  * We used to use the platform's NL_ARGMAX here, but that's a bad idea,
  * first because the point of this module is to remove platform dependencies
  * not perpetuate them, and second because some platforms use ridiculously
@@ -561,16 +550,12 @@ nextch2:
 					longflag = 1;
 				goto nextch2;
 			case 'z':
-#if SIZEOF_SIZE_T == 8
-#ifdef HAVE_LONG_INT_64
+#if SIZEOF_SIZE_T == SIZEOF_LONG
 				longflag = 1;
-#elif defined(HAVE_LONG_LONG_INT_64)
+#elif SIZEOF_SIZE_T == SIZEOF_LONG_LONG
 				longlongflag = 1;
 #else
-#error "Don't know how to print 64bit integers"
-#endif
-#else
-				/* assume size_t is same size as int */
+#error "cannot find integer type of the same size as size_t"
 #endif
 				goto nextch2;
 			case 'h':
@@ -828,16 +813,12 @@ nextch1:
 					longflag = 1;
 				goto nextch1;
 			case 'z':
-#if SIZEOF_SIZE_T == 8
-#ifdef HAVE_LONG_INT_64
+#if SIZEOF_SIZE_T == SIZEOF_LONG
 				longflag = 1;
-#elif defined(HAVE_LONG_LONG_INT_64)
+#elif SIZEOF_SIZE_T == SIZEOF_LONG_LONG
 				longlongflag = 1;
 #else
-#error "Don't know how to print 64bit integers"
-#endif
-#else
-				/* assume size_t is same size as int */
+#error "cannot find integer type of the same size as size_t"
 #endif
 				goto nextch1;
 			case 'h':
