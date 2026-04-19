@@ -93,6 +93,16 @@ typedef struct SourceFilters
 	SourceFilterTableList excludeTableList;
 	SourceFilterTableList excludeTableDataList;
 	SourceFilterTableList excludeIndexList;
+
+	/*
+	 * A pre-built WITH ... prefix that defines filter_* CTEs populated from
+	 * the lists above, ending with a trailing space. Prepended to every
+	 * filtered catalog query so no server-side temp tables are needed — which
+	 * lets pgcopydb operate against a read-only source (hot standby).
+	 *
+	 * Built lazily by schema_prepare_filters().
+	 */
+	char *filterCTE;
 } SourceFilters;
 
 char * filterTypeToString(SourceFilterType type);

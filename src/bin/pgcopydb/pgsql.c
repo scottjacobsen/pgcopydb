@@ -5199,3 +5199,41 @@ pgsql_escape_identifier(PGSQL *pgsql, char *src)
 
 	return escapedIdentifierCopy;
 }
+
+
+/*
+ * pgsql_escape_literal escapes a string so it can be used as a SQL literal in
+ * a query. The returned string is wrapped in single quotes and any embedded
+ * special characters are escaped. Uses libpq's PQescapeLiteral under the hood.
+ *
+ * The connection must already be open.
+ */
+char *
+pgsql_escape_literal(PGSQL *pgsql, const char *src)
+{
+	PGconn *conn = pgsql->connection;
+	if (conn == NULL)
+	{
+		return NULL;
+	}
+
+	char *escaped = PQescapeLiteral(conn, src, strlen(src));
+
+	if (escaped == NULL)
+	{
+		log_error("Failed to escape literal: %s", PQerrorMessage(conn));
+		return NULL;
+	}
+
+	char *copy = strdup(escaped);
+
+	PQfreemem(escaped);
+
+	if (copy == NULL)
+	{
+		log_error("Failed to allocate memory for escaped literal");
+		return NULL;
+	}
+
+	return copy;
+}

@@ -563,4 +563,5 @@ bool pgsql_table_exists(PGSQL *pgsql,
 bool pgsql_current_wal_flush_lsn(PGSQL *pgsql, uint64_t *lsn);
 
 char * pgsql_escape_identifier(PGSQL *pgsql, char *src);
+char * pgsql_escape_literal(PGSQL *pgsql, const char *src);
 #endif /* PGSQL_H */

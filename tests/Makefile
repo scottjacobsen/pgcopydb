@@ -18,6 +18,9 @@ pagila-multi-steps: build
 pagila-standby: build
 	$(MAKE) -C $@
 
+filtering-standby: build
+	$(MAKE) -C $@
+
 blobs: build
 	$(MAKE) -C $@
 
