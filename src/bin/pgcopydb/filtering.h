@@ -101,4 +101,22 @@ bool parse_filters(const char *filebname, SourceFilters *filters);
 
 bool filters_as_json(SourceFilters *filters, JSON_Value *jsFilter);
 
+/*
+ * filter_matches_table returns true when the (schema, table) pair matches a
+ * filter that should cause DML for that table to be excluded from the
+ * logical replication data stream. This covers:
+ *
+ *   - [exclude-schema]          (schema in excludeSchemaList)
+ *   - [exclude-table]           (table in excludeTableList)
+ *   - [exclude-table-data]      (table in excludeTableDataList)
+ *   - [include-only-schema]     (schema not in includeOnlySchemaList)
+ *   - [include-only-table]      (table not in includeOnlyTableList)
+ *
+ * Returns false for [exclude-index] — index filters don't affect the data
+ * stream — and when filters is NULL or holds no active rule.
+ */
+bool filter_matches_table(SourceFilters *filters,
+						  const char *nspname,
+						  const char *relname);
+
 #endif  /* FILTERING_H */
