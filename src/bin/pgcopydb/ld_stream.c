@@ -49,6 +49,7 @@ stream_init_specs(StreamSpecs *specs,
 				  uint64_t endpos,
 				  LogicalStreamMode mode,
 				  DatabaseCatalog *sourceDB,
+				  SourceFilters *filters,
 				  bool stdin,
 				  bool stdout,
 				  bool logSQL)
@@ -66,6 +67,14 @@ stream_init_specs(StreamSpecs *specs,
 	 * Open the specified sourceDB catalog.
 	 */
 	specs->sourceDB = sourceDB;
+
+	/*
+	 * User-provided --filters configuration. May be NULL when no filter
+	 * is in effect. Propagated to StreamContext in stream_init_context()
+	 * so the prefetch/transform subprocesses can consult it for each
+	 * logical replication message.
+	 */
+	specs->filters = filters;
 
 	if (!catalog_init(specs->sourceDB))
 	{
@@ -409,6 +418,9 @@ stream_init_context(StreamSpecs *specs)
 
 	/* transform needs some catalog lookups (pkey, type oid) */
 	privateContext->sourceDB = specs->sourceDB;
+
+	/* user --filters configuration is consulted per DML message */
+	privateContext->filters = specs->filters;
 
 	return true;
 }
@@ -1659,6 +1671,29 @@ prepareMessageMetadataFromContext(LogicalStreamContext *context)
 		log_error("Failed to parse header from logical decoding message: %s",
 				  context->buffer);
 		return false;
+	}
+
+	/*
+	 * Apply the user's --filters configuration. The plugin-specific
+	 * parser copied the DML message's (schema, relation) onto metadata;
+	 * if the pair matches any of the exclusion or include-only rules
+	 * this message must not flow through the prefetch -> transform ->
+	 * apply pipeline, otherwise the apply worker will try (and, for
+	 * excluded tables, fail) to replay DML against the target. This
+	 * closes the gap that made clone --follow --filters ignore filters
+	 * during streaming (upstream issue #624).
+	 */
+	if (privateContext->filters != NULL &&
+		filter_matches_table(privateContext->filters,
+							 metadata->nspname,
+							 metadata->relname))
+	{
+		log_debug("Filtering out %c message for table \"%s\".\"%s\" "
+				  "(matches --filters configuration)",
+				  metadata->action,
+				  metadata->nspname,
+				  metadata->relname);
+		metadata->filterOut = true;
 	}
 
 	/* in case of filtering, early exit */

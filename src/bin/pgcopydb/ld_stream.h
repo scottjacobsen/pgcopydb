@@ -86,6 +86,16 @@ typedef struct LogicalMessageMetadata
 	bool filterOut;
 	bool skipping;
 
+	/*
+	 * nspname / relname are populated by the plugin-specific parsers for
+	 * DML messages so the shared filter check in
+	 * prepareMessageMetadataFromContext can consult the user's --filters
+	 * configuration. Leave empty for messages without a table context
+	 * (BEGIN/COMMIT, KEEPALIVE, SWITCH, ...).
+	 */
+	char nspname[PG_NAMEDATALEN];
+	char relname[PG_NAMEDATALEN];
+
 	/* the statement part of a PREPARE dseadbeef AS ... */
 	char *stmt;
 
@@ -365,6 +375,9 @@ typedef struct StreamContext
 	/* transform needs some catalog lookups (pkey, type oid) */
 	DatabaseCatalog *sourceDB;
 
+	/* User --filters configuration, for filtering the data stream. */
+	SourceFilters *filters;
+
 	/* hash table acts as a cache for tables with generated columns */
 	GeneratedColumnsCache *generatedColumnsCache;
 
@@ -522,6 +535,12 @@ struct StreamSpecs
 	/* transform needs some catalog lookups (pkey, type oid) */
 	DatabaseCatalog *sourceDB;
 
+	/*
+	 * User-provided --filters configuration. NULL when no filter is in
+	 * effect. Shared with the parent CopyDataSpec; not owned here.
+	 */
+	SourceFilters *filters;
+
 	/* receive push json filenames to a queue for transform */
 	Queue transformQueue;
 	PGSQL transformPGSQL;
@@ -550,6 +569,7 @@ bool stream_init_specs(StreamSpecs *specs,
 					   uint64_t endpos,
 					   LogicalStreamMode mode,
 					   DatabaseCatalog *sourceDB,
+					   SourceFilters *filters,
 					   bool stdIn,
 					   bool stdOut,
 					   bool logSQL);

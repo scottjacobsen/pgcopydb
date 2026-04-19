@@ -592,3 +592,121 @@ filters_as_json(SourceFilters *filters, JSON_Value *jsFilter)
 
 	return true;
 }
+
+
+/*
+ * filter_matches_schema returns true when nspname appears in list.
+ */
+static bool
+filter_matches_schema(SourceFilterSchemaList *list, const char *nspname)
+{
+	if (list == NULL || list->count == 0 || nspname == NULL)
+	{
+		return false;
+	}
+
+	for (int i = 0; i < list->count; i++)
+	{
+		if (streq(list->array[i].nspname, nspname))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+/*
+ * filter_matches_table_in_list returns true when (nspname, relname)
+ * appears in list.
+ */
+static bool
+filter_matches_table_in_list(SourceFilterTableList *list,
+							 const char *nspname,
+							 const char *relname)
+{
+	if (list == NULL || list->count == 0 ||
+		nspname == NULL || relname == NULL)
+	{
+		return false;
+	}
+
+	for (int i = 0; i < list->count; i++)
+	{
+		if (streq(list->array[i].nspname, nspname) &&
+			streq(list->array[i].relname, relname))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+/*
+ * filter_matches_table returns true when DML on the given fully-qualified
+ * table must be excluded from the logical replication data stream.
+ */
+bool
+filter_matches_table(SourceFilters *filters,
+					 const char *nspname,
+					 const char *relname)
+{
+	if (filters == NULL ||
+		filters->type == SOURCE_FILTER_TYPE_NONE ||
+		nspname == NULL || relname == NULL ||
+		nspname[0] == '\0' || relname[0] == '\0')
+	{
+		return false;
+	}
+
+	if (filter_matches_schema(&(filters->excludeSchemaList), nspname))
+	{
+		return true;
+	}
+
+	if (filter_matches_table_in_list(&(filters->excludeTableList),
+									 nspname, relname))
+	{
+		return true;
+	}
+
+	if (filter_matches_table_in_list(&(filters->excludeTableDataList),
+									 nspname, relname))
+	{
+		return true;
+	}
+
+	/*
+	 * include-only-* acts like an allow-list. When the list is non-empty
+	 * the table must appear in one of the relevant lists; otherwise it is
+	 * implicitly filtered.
+	 */
+	if (filters->includeOnlySchemaList.count > 0 &&
+		!filter_matches_schema(&(filters->includeOnlySchemaList), nspname))
+	{
+		/*
+		 * Let the table through when include-only-table explicitly names
+		 * it, mirroring how the clone-phase filter builds the catalog
+		 * inclusion set.
+		 */
+		if (filters->includeOnlyTableList.count > 0 &&
+			filter_matches_table_in_list(&(filters->includeOnlyTableList),
+										 nspname, relname))
+		{
+			return false;
+		}
+		return true;
+	}
+
+	if (filters->includeOnlyTableList.count > 0 &&
+		!filter_matches_table_in_list(&(filters->includeOnlyTableList),
+									  nspname, relname))
+	{
+		return true;
+	}
+
+	return false;
+}

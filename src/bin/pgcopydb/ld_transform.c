@@ -1388,6 +1388,20 @@ parseMessage(StreamContext *privateContext, char *message, JSON_Value *json)
 				}
 			}
 
+			/*
+			 * Plugin parsers may decide, after inspecting the table
+			 * name, that a DML message must be dropped — either the
+			 * user excluded it via --filters (prefetch normally catches
+			 * this earlier; this is the resume-from-old-file case), or
+			 * the table is not in our local catalog (unmapped
+			 * extension table, e.g. partman.part_config). Either way,
+			 * skip the statement append so catchup/apply never sees it.
+			 */
+			if (metadata->filterOut)
+			{
+				break;
+			}
+
 			(void) streamLogicalTransactionAppendStatement(txn, stmt);
 
 			break;

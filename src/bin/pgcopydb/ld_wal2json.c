@@ -101,6 +101,27 @@ parseWal2jsonMessageActionAndXid(LogicalStreamContext *context)
 		metadata->xid = (uint32_t) xid;
 	}
 
+	/*
+	 * Copy the table's (schema, relation) onto metadata for the central
+	 * filter check in prepareMessageMetadataFromContext. Only DML
+	 * messages (INSERT/UPDATE/DELETE/TRUNCATE) carry this information;
+	 * BEGIN/COMMIT and KEEPALIVE do not and we leave the metadata
+	 * fields empty in that case.
+	 */
+	const char *nspname =
+		json_object_dotget_string(jsobj, "message.schema");
+	const char *relname =
+		json_object_dotget_string(jsobj, "message.table");
+
+	if (nspname != NULL)
+	{
+		strlcpy(metadata->nspname, nspname, sizeof(metadata->nspname));
+	}
+
+	if (relname != NULL)
+	{
+		strlcpy(metadata->relname, relname, sizeof(metadata->relname));
+	}
 
 	return true;
 }

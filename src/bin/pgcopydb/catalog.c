@@ -877,6 +877,50 @@ catalog_create_semaphore(DatabaseCatalog *catalog)
 bool
 catalog_attach(DatabaseCatalog *a, DatabaseCatalog *b, const char *name)
 {
+	/*
+	 * When clone --follow is combined with --filters the parent attaches the
+	 * source database and its forked subprocess also tries to attach it,
+	 * causing "database source is already in use". Check pragma_database_list
+	 * first and treat a pre-existing attachment as success. See upstream
+	 * issues #829 / #871 / #910 and PR #924 (author: mtunski) for context.
+	 */
+	char checkSql[BUFSIZE] = { 0 };
+	sformat(checkSql, sizeof(checkSql),
+			"SELECT name FROM pragma_database_list WHERE name = '%s'", name);
+
+	SQLiteQuery query = { 0 };
+
+	if (!catalog_sql_prepare(a->db, checkSql, &query))
+	{
+		return false;
+	}
+
+	int checkResult = catalog_sql_step(&query);
+	if (checkResult == SQLITE_ROW)
+	{
+		log_debug("Database '%s' is already attached as %s, skipping attach",
+				  b->dbfile, name);
+		if (!catalog_sql_finalize(&query))
+		{
+			return false;
+		}
+		return true;
+	}
+	else if (checkResult != SQLITE_DONE)
+	{
+		log_error("Failed to check if database is attached: %s", checkSql);
+		if (!catalog_sql_finalize(&query))
+		{
+			return false;
+		}
+		return false;
+	}
+
+	if (!catalog_sql_finalize(&query))
+	{
+		return false;
+	}
+
 	char *sqlTmpl = "attach '%s' as %s";
 	char buf[BUFSIZE + MAXPGPATH] = { 0 };
 

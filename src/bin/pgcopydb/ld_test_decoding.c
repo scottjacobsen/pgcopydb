@@ -86,6 +86,47 @@ static bool prepareUpdateTuppleArrays(StreamContext *privateContext,
 static bool findIdentifierEndPos(const char *message, char separator, int *position);
 
 /*
+ * unquoteTestDecodingIdentifier strips a single pair of outer double quotes
+ * from a Postgres identifier as emitted by test_decoding's quote_identifier
+ * (e.g. "Public" -> Public), leaving unquoted inputs untouched. This mirrors
+ * the behaviour of parse_filter_quoted_table_name() in filtering.c so that
+ * identifiers extracted from the replication stream can be compared against
+ * the parsed filter list with streq().
+ *
+ * The function deliberately does NOT collapse doubled inner quotes ("")
+ * because filtering.c does not either; we want symmetric behaviour.
+ */
+static void
+unquoteTestDecodingIdentifier(char *dst, size_t dstsize, const char *src)
+{
+	if (dstsize == 0)
+	{
+		return;
+	}
+
+	if (src == NULL)
+	{
+		dst[0] = '\0';
+		return;
+	}
+
+	size_t srclen = strlen(src);
+
+	if (srclen >= 2 && src[0] == '"' && src[srclen - 1] == '"')
+	{
+		size_t innerlen = srclen - 2;
+		size_t copylen = innerlen < dstsize - 1 ? innerlen : dstsize - 1;
+		memcpy(dst, src + 1, copylen);
+		dst[copylen] = '\0';
+	}
+	else
+	{
+		strlcpy(dst, src, dstsize);
+	}
+}
+
+
+/*
  * prepareWal2jsonMessage prepares our internal JSON entry from a test_decoding
  * message. At this stage we only escape the message as a proper JSON string.
  */
@@ -172,7 +213,25 @@ parseTestDecodingMessageActionAndXid(LogicalStreamContext *context)
 			return false;
 		}
 
-		if (strcmp(header.table.nspname, "pgcopydb") == 0)
+		/*
+		 * Stash the fully-qualified relation on the metadata so the
+		 * central filter check in prepareMessageMetadataFromContext can
+		 * consult the user's --filters configuration.
+		 *
+		 * test_decoding emits Postgres' own quote_identifier output —
+		 * `public.hello`, `"Public".hello`, `"sp $cial"."t ablE"` — so
+		 * strip the outer double quotes when present. parse_filters()
+		 * in filtering.c stores identifiers unquoted, so this mirrors
+		 * that behavior and keeps the two sides comparable.
+		 */
+		unquoteTestDecodingIdentifier(metadata->nspname,
+									  sizeof(metadata->nspname),
+									  header.table.nspname);
+		unquoteTestDecodingIdentifier(metadata->relname,
+									  sizeof(metadata->relname),
+									  header.table.relname);
+
+		if (streq(metadata->nspname, "pgcopydb"))
 		{
 			log_debug("Filtering out message for schema \"%s\": %s",
 					  header.table.nspname,
@@ -1131,10 +1190,28 @@ prepareUpdateTuppleArrays(StreamContext *privateContext,
 
 	if (table->oid == 0)
 	{
-		log_error("Failed to parse decoding message for UPDATE on "
-				  "table %s which is not in our catalogs",
-				  table->qname);
-		return false;
+		/*
+		 * The table is not in our local catalog. This happens when the
+		 * user excluded the table via --filters (in which case the
+		 * prefetch central filter usually drops the message first), or
+		 * when the source has a table that pgcopydb never registered,
+		 * for example tables owned by an extension that was skipped
+		 * with --skip-extensions (pg_partman's part_config is a common
+		 * offender). Rather than fail the whole follow stream we
+		 * silently skip this DML — the clone phase already decided
+		 * this relation isn't in scope.
+		 */
+		log_debug("Skipping %c message for table \"%s\".\"%s\" that "
+				  "is not in our catalog (filtered or unmapped)",
+				  header->action,
+				  header->table.nspname,
+				  header->table.relname);
+
+		LogicalMessageMetadata *metadata = &(privateContext->metadata);
+		metadata->filterOut = true;
+
+		free(table);
+		return true;
 	}
 
 	/* FIXME: lookup for the attribute in the SQLite database directly */
