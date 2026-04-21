@@ -146,6 +146,20 @@ copydb_set_snapshot(CopyDataSpec *copySpecs)
 		return false;
 	}
 
+	/*
+	 * Detect hot standby here rather than at snapshot-creation time: it
+	 * covers every path that reaches this function (SQL export, logical
+	 * replication slot export, --snapshot resume) and reuses the SQL
+	 * connection we just opened. Must run before BEGIN because
+	 * SET TRANSACTION ISOLATION LEVEL below rejects any prior query in the
+	 * transaction.
+	 */
+	if (!pgsql_is_in_recovery(pgsql, &(snapshot->isReadOnly)))
+	{
+		(void) pgsql_finish(pgsql);
+		return false;
+	}
+
 	if (!pgsql_begin(pgsql))
 	{
 		/* errors have already been logged */
@@ -161,10 +175,6 @@ copydb_set_snapshot(CopyDataSpec *copySpecs)
 		 * REPEATABLE READ isolation level (otherwise, the snapshot would be
 		 * discarded immediately, since READ COMMITTED mode takes a new
 		 * snapshot for each command).
-		 *
-		 * When --filters are used, pgcopydb creates TEMP tables on the source
-		 * database to then implement the filtering as JOINs with the Postgres
-		 * catalogs. And even TEMP tables need read-write transaction.
 		 */
 		IsolationLevel level = ISOLATION_REPEATABLE_READ;
 		bool deferrable = true;
