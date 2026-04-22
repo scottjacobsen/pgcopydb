@@ -90,5 +90,20 @@ pgcopydb stream transform --debug /usr/src/pgcopydb/continued-txn.json /tmp/cont
 
 diff /usr/src/pgcopydb/continued-txn.sql /tmp/continued-txn.sql || (cat /tmp/continued-txn.sql && exit 1)
 
+# transform must gracefully skip DML for tables absent from the local catalog
+# (e.g. partman.part_config that was not cloned because the extension was
+# skipped). Previously this caused the follow stream to abort with
+# "Failed to parse decoding message for UPDATE on table ... which is not in
+# our catalogs". The expected behaviour now is: transform exits 0, emits the
+# enclosing BEGIN/COMMIT, and drops the UPDATE statement on the floor.
+pgcopydb stream transform --debug /usr/src/pgcopydb/missing-table.json /tmp/missing-table.sql
+
+# assert that no stray statements for the missing table slipped through
+if grep -q 'partman.part_config' /tmp/missing-table.sql; then
+    echo "FAIL: statement for missing table partman.part_config leaked into transform output"
+    cat /tmp/missing-table.sql
+    exit 1
+fi
+
 # cleanup
 pgcopydb stream cleanup

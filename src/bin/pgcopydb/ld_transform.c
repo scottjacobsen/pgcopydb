@@ -1388,6 +1388,19 @@ parseMessage(StreamContext *privateContext, char *message, JSON_Value *json)
 				}
 			}
 
+			/*
+			 * Plugin parsers may decide after inspecting the table
+			 * name that a DML message must be dropped — e.g. the
+			 * relation is absent from the local catalog (unmapped
+			 * extension table such as partman.part_config). Honor the
+			 * filterOut flag the parser sets instead of appending a
+			 * half-populated statement.
+			 */
+			if (metadata->filterOut)
+			{
+				break;
+			}
+
 			(void) streamLogicalTransactionAppendStatement(txn, stmt);
 
 			break;
