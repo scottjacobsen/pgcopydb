@@ -1131,10 +1131,26 @@ prepareUpdateTuppleArrays(StreamContext *privateContext,
 
 	if (table->oid == 0)
 	{
-		log_error("Failed to parse decoding message for UPDATE on "
-				  "table %s which is not in our catalogs",
-				  table->qname);
-		return false;
+		/*
+		 * The table is absent from our local catalog — typically an
+		 * extension table that clone skipped (e.g. partman.part_config
+		 * with --skip-extensions). Rather than abort the whole follow
+		 * stream, warn and drop the DML: the clone phase already
+		 * decided this relation is not in scope, so there is no target
+		 * table to apply to. We reuse the existing filterOut machinery
+		 * already used to drop pgcopydb.sentinel messages.
+		 */
+		log_warn("Ignoring %c message for table \"%s\".\"%s\" which is "
+				 "not in our catalog (likely an excluded or unmapped "
+				 "extension table)",
+				 header->action,
+				 header->table.nspname,
+				 header->table.relname);
+
+		privateContext->metadata.filterOut = true;
+
+		free(table);
+		return true;
 	}
 
 	/* FIXME: lookup for the attribute in the SQLite database directly */
