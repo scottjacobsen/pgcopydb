@@ -708,6 +708,19 @@ copydb_prepare_table_specs(CopyDataSpec *specs, PGSQL *pgsql)
 		log_info("Splitting source candidate tables larger than %s",
 				 specs->splitTablesLargerThan.bytesPretty);
 
+		/*
+		 * Detect hot standby here against the same connection we'll use for
+		 * per-table work. When the snapshot was exported via the replication
+		 * protocol (CREATE_REPLICATION_SLOT) the sourceSnapshot.isReadOnly
+		 * flag was never populated, so without this check we'd try to run
+		 * ANALYZE on a read replica and fail.
+		 */
+		if (!pgsql_is_in_recovery(pgsql, &(specs->sourceSnapshot.isReadOnly)))
+		{
+			log_error("Failed to determine if source is in recovery mode");
+			return false;
+		}
+
 		TopLevelTiming partsTiming = {
 			.label = CopyDataSectionToString(DATA_SECTION_TABLE_DATA_PARTS)
 		};
@@ -788,18 +801,12 @@ copydb_prepare_table_specs_hook(void *ctx, SourceTable *source)
 	 * CTID range scan is supported (see columnar storage extensions), so
 	 * we skip partitioning altogether in that case.
 	 *
-	 * Also, we cannot execute ANALYZE on a database that is in recovery mode,
-	 * so we skip partitioning in that case too.
+	 * We used to skip partitioning entirely when connected to a hot standby,
+	 * because the CTID path wants to ANALYZE the source to refresh relpages.
+	 * Integer-PK splitting doesn't need ANALYZE, and even the CTID path is
+	 * usable with possibly-stale relpages — so we handle the standby case
+	 * below in the CTID branch rather than bailing out here.
 	 */
-
-	if (specs->sourceSnapshot.isReadOnly)
-	{
-		log_warn("Connected to a standby server where pg_is_in_recovery(): "
-				 "skipping partitioning for table %s",
-				 source->qname);
-
-		return true;
-	}
 
 	if (IS_EMPTY_STRING_BUFFER(source->partKey) &&
 		streq(source->amname, "heap"))
@@ -836,6 +843,13 @@ copydb_prepare_table_specs_hook(void *ctx, SourceTable *source)
 		{
 			log_debug("Skipping running ANALYZE on table %s for CTID split",
 					  source->qname);
+		}
+		else if (specs->sourceSnapshot.isReadOnly)
+		{
+			log_notice("Source is in recovery mode (hot standby): "
+					   "skipping ANALYZE on table %s for CTID split, "
+					   "using existing relpages statistics",
+					   source->qname);
 		}
 		else
 		{
