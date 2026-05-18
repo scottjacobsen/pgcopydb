@@ -801,6 +801,96 @@ summary_table_parts_done_fetch(SQLiteQuery *query)
 
 
 /*
+ * summary_lookup_vacuum looks-up an existing vacuum_summary row by tableoid,
+ * so a --resume run can skip tables already vacuumed on a previous pass.
+ *
+ * On success the existing row (if any) is loaded into tableSpecs->vSummary;
+ * if no row exists the summary is left zero-initialised. Callers check
+ * tableSpecs->vSummary.doneTime > 0 to decide whether the table is done.
+ */
+bool
+summary_lookup_vacuum(DatabaseCatalog *catalog, CopyTableDataSpec *tableSpecs)
+{
+	sqlite3 *db = catalog->db;
+
+	if (db == NULL)
+	{
+		log_error("BUG: summary_lookup_vacuum: db is NULL");
+		return false;
+	}
+
+	SourceTable *table = tableSpecs->sourceTable;
+	CopyVacuumTableSummary *vacuumSummary = &(tableSpecs->vSummary);
+
+	vacuumSummary->table = table;
+
+	char *sql =
+		"  select pid, start_time_epoch, done_time_epoch, duration "
+		"    from vacuum_summary "
+		"   where tableoid = $1";
+
+	if (!semaphore_lock(&(catalog->sema)))
+	{
+		/* errors have already been logged */
+		return false;
+	}
+
+	SQLiteQuery query = {
+		.context = vacuumSummary,
+		.fetchFunction = &summary_vacuum_fetch
+	};
+
+	if (!catalog_sql_prepare(db, sql, &query))
+	{
+		/* errors have already been logged */
+		(void) semaphore_unlock(&(catalog->sema));
+		return false;
+	}
+
+	BindParam params[] = {
+		{ BIND_PARAMETER_TYPE_INT64, "tableoid", table->oid, NULL }
+	};
+
+	if (!catalog_sql_bind(&query, params, sizeof(params) / sizeof(params[0])))
+	{
+		/* errors have already been logged */
+		(void) semaphore_unlock(&(catalog->sema));
+		return false;
+	}
+
+	if (!catalog_sql_execute_once(&query))
+	{
+		/* errors have already been logged */
+		(void) semaphore_unlock(&(catalog->sema));
+		return false;
+	}
+
+	(void) semaphore_unlock(&(catalog->sema));
+
+	return true;
+}
+
+
+/*
+ * summary_vacuum_fetch fetches a CopyVacuumTableSummary entry from a SQLite
+ * result set produced by summary_lookup_vacuum.
+ */
+bool
+summary_vacuum_fetch(SQLiteQuery *query)
+{
+	CopyVacuumTableSummary *vacuumSummary =
+		(CopyVacuumTableSummary *) query->context;
+
+	vacuumSummary->pid = sqlite3_column_int64(query->ppStmt, 0);
+	vacuumSummary->startTime = sqlite3_column_int64(query->ppStmt, 1);
+	vacuumSummary->doneTime = sqlite3_column_int64(query->ppStmt, 2);
+	vacuumSummary->durationMs = sqlite3_column_int64(query->ppStmt, 3);
+
+	return true;
+}
+
+
+/*
  * summary_add_vacuum INSERTs a SourceTable vacuum summary entry to our
  * internal catalogs database.
  */
@@ -830,8 +920,15 @@ summary_add_vacuum(DatabaseCatalog *catalog, CopyTableDataSpec *tableSpecs)
 		return false;
 	}
 
+	/*
+	 * Use INSERT OR REPLACE so a stale row from a prior --resume attempt
+	 * that crashed between summary_add_vacuum and summary_finish_vacuum
+	 * does not trip the unique(tableoid) constraint. The "already done"
+	 * case is filtered out by summary_lookup_vacuum before we get here.
+	 */
 	char *sql =
-		"insert into vacuum_summary(pid, tableoid, start_time_epoch)"
+		"insert or replace into "
+		"vacuum_summary(pid, tableoid, start_time_epoch)"
 		"values($1, $2, $3)";
 
 	if (!semaphore_lock(&(catalog->sema)))

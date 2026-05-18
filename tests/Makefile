@@ -8,7 +8,7 @@ all: pagila pagila-multi-steps blobs unit filtering extensions \
 	 cdc-wal2json cdc-test-decoding cdc-endpos-between-transaction cdc-low-level \
 	 cdc-replica-identity-index \
 	 follow-wal2json follow-9.6 follow-data-only \
-	 endpos-in-multi-wal-txn;
+	 endpos-in-multi-wal-txn vacuum-resume;
 
 pagila: build
 	$(MAKE) -C $@
@@ -57,7 +57,10 @@ follow-data-only: build
 
 endpos-in-multi-wal-txn: build
 	$(MAKE) -C $@
-	
+
+vacuum-resume: build
+	$(MAKE) -C $@
+
 timescaledb: build
 	$(MAKE) -C $@
 
@@ -68,4 +71,4 @@ build:
 .PHONY: pagila pagila-multi-steps blobs unit filtering extensions
 .PHONY: cdc-wal2json cdc-test-decoding cdc-low-level cdc-replica-identity-index
 .PHONY: follow-wal2json follow-9.6
-.PHONY: endpos-in-multi-wal-txn
+.PHONY: endpos-in-multi-wal-txn vacuum-resume

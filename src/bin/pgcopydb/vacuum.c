@@ -318,6 +318,27 @@ vacuum_analyze_table_by_oid(CopyDataSpec *specs, uint32_t oid)
 		return false;
 	}
 
+	/*
+	 * On --resume, skip tables already vacuumed in a previous run. Without
+	 * this, summary_add_vacuum below trips the unique(tableoid) constraint
+	 * on vacuum_summary and the worker exits with SQLite error 19, which
+	 * cascades into "Some VACUUM worker process(es) have exited with error".
+	 */
+	if (!summary_lookup_vacuum(&(specs->catalogs.source), &tableSpecs))
+	{
+		/* errors have already been logged */
+		return false;
+	}
+
+	if (tableSpecs.vSummary.doneTime > 0)
+	{
+		log_info("Skipping vacuum analyze of %s (%u), "
+				 "already done on a previous run",
+				 table.qname,
+				 table.oid);
+		return true;
+	}
+
 	PGSQL dst = { 0 };
 
 	/* initialize our connection to the target database */

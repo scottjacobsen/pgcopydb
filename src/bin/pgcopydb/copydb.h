@@ -544,6 +544,11 @@ bool summary_lookup_table_parts_done(DatabaseCatalog *catalog,
 
 bool summary_table_parts_done_fetch(SQLiteQuery *query);
 
+bool summary_lookup_vacuum(DatabaseCatalog *catalog,
+						   CopyTableDataSpec *tableSpecs);
+
+bool summary_vacuum_fetch(SQLiteQuery *query);
+
 bool summary_add_vacuum(DatabaseCatalog *catalog,
 						CopyTableDataSpec *tableSpecs);
 
