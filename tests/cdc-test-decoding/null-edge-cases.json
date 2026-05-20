@@ -1,0 +1,4 @@
+{"action":"B","xid":"100","lsn":"7A/00001000","timestamp":"2026-05-20 12:00:00.000000+0000","message":"BEGIN 100"}
+{"action":"I","xid":"0","lsn":"7A/00001100","timestamp":"2026-05-20 12:00:00.000001+0000","message":"table public.null_test: INSERT: id[integer]:1 c_quoted_null[text]:'null' c_prefix_email[text]:'nullable@example.com' c_prefix_word[text]:'nulls' c_trailing_space[text]:'null ' c_uppercase[text]:'NULL' c_empty[text]:'' c_real_null[text]:null"}
+{"action":"C","xid":"100","lsn":"7A/00001200","timestamp":"2026-05-20 12:00:00.000002+0000","message":"COMMIT 100"}
+{"action":"X","lsn":"7A/00002000"}
