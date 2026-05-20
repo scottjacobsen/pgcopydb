@@ -52,6 +52,7 @@ typedef struct TestDecodingColumns
 	int colnameLen;
 	char *valueStart;
 	int valueLen;
+	bool isQuoted;
 
 	struct TestDecodingColumns *next;
 } TestDecodingColumns;
@@ -745,6 +746,13 @@ parseNextColumn(TestDecodingColumns *cols,
 {
 	char *ptr = (char *) (header->message + header->pos);
 
+	/* Default to non-quoted; quoted-literal branches below set this to true.
+	 * The NULL check in listToTuple uses this to distinguish an unquoted
+	 * `null` literal from a quoted string whose contents happen to be (or
+	 * start with) "null".
+	 */
+	cols->isQuoted = false;
+
 	if (ptr == NULL || *ptr == '\0')
 	{
 		header->eom = true;
@@ -852,6 +860,8 @@ parseNextColumn(TestDecodingColumns *cols,
 	 */
 	if (*ptr == '\'')
 	{
+		cols->isQuoted = true;
+
 		/* skip the opening single-quote now */
 		char *cur = ptr + 1;
 
@@ -901,6 +911,8 @@ parseNextColumn(TestDecodingColumns *cols,
 	 */
 	else if (*ptr == 'B')
 	{
+		cols->isQuoted = true;
+
 		/* skip B and ' */
 		char *start = ptr + 2;
 		char *end = strchr(start, '\'');
@@ -1014,8 +1026,15 @@ listToTuple(LogicalMessageTuple *tuple, TestDecodingColumns *cols, int count)
 			return false;
 		}
 
-		/* strlen("null") == 4 */
-		if (strncmp(cur->valueStart, "null", 4) == 0)
+		/*
+		 * Only an unquoted, exactly-four-character `null` token is SQL NULL.
+		 * A quoted string whose contents are (or begin with) "null" is a
+		 * legitimate value and must be preserved verbatim — see upstream
+		 * issue #931. strlen("null") == 4.
+		 */
+		if (!cur->isQuoted &&
+			cur->valueLen == 4 &&
+			strncmp(cur->valueStart, "null", 4) == 0)
 		{
 			valueColumn->isNull = true;
 		}
