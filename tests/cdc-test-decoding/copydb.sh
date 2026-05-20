@@ -90,5 +90,22 @@ pgcopydb stream transform --debug /usr/src/pgcopydb/continued-txn.json /tmp/cont
 
 diff /usr/src/pgcopydb/continued-txn.sql /tmp/continued-txn.sql || (cat /tmp/continued-txn.sql && exit 1)
 
+# Regression: TEXT values that begin with the literal "null" must not be
+# rewritten to SQL NULL. See upstream issue #931 / PR #933. The fixture
+# exercises a row whose columns cover:
+#   - quoted four-char 'null'
+#   - quoted 'nullable@example.com' (prefix match, len > 4)
+#   - quoted 'nulls' (prefix match, len 5)
+#   - quoted 'null ' (trailing space inside quotes)
+#   - quoted 'NULL' (uppercase, sanity)
+#   - quoted ''     (empty string)
+#   - unquoted null (real SQL NULL — must remain NULL)
+pgcopydb stream transform --debug /usr/src/pgcopydb/null-edge-cases.json /tmp/null-edge-cases.sql
+
+expected_params='\["1","null","nullable@example.com","nulls","null ","NULL","",null\]'
+grep -qE "^EXECUTE [0-9a-f]+${expected_params};" /tmp/null-edge-cases.sql \
+    || (echo "FAIL: null-edge-cases EXECUTE params did not round-trip" \
+        && cat /tmp/null-edge-cases.sql && exit 1)
+
 # cleanup
 pgcopydb stream cleanup
