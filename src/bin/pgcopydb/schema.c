@@ -3791,10 +3791,14 @@ filtered_sql(SourceFilters *filters, char *sql)
 	}
 
 	char *p = out;
-	memcpy(p, filters->filterCTE, prefixLen); p += prefixLen;
-	memcpy(p, wrapOpen, openLen); p += openLen;
-	memcpy(p, sql, sqlLen); p += sqlLen;
-	memcpy(p, wrapClose, closeLen); p += closeLen;
+	memcpy(p, filters->filterCTE, prefixLen);
+	p += prefixLen;
+	memcpy(p, wrapOpen, openLen);
+	p += openLen;
+	memcpy(p, sql, sqlLen);
+	p += sqlLen;
+	memcpy(p, wrapClose, closeLen);
+	p += closeLen;
 	*p = '\0';
 
 	return out;
