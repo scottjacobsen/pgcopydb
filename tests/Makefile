@@ -6,7 +6,7 @@ BUILD_ARGS = --build-arg PGVERSION=$(PGVERSION)
 
 all: pagila pagila-multi-steps blobs unit filtering extensions \
 	 cdc-wal2json cdc-test-decoding cdc-endpos-between-transaction cdc-low-level \
-	 cdc-replica-identity-index \
+	 cdc-replica-identity-index cdc-catchup-segment-gap \
 	 follow-wal2json follow-9.6 follow-data-only \
 	 endpos-in-multi-wal-txn;
 
@@ -49,6 +49,9 @@ cdc-low-level: build
 cdc-replica-identity-index: build
 	$(MAKE) -C $@
 
+cdc-catchup-segment-gap: build
+	$(MAKE) -C $@
+
 follow-wal2json: build
 	$(MAKE) -C $@
 
@@ -70,5 +73,6 @@ build:
 .PHONY: all build
 .PHONY: pagila pagila-multi-steps blobs unit filtering extensions
 .PHONY: cdc-wal2json cdc-test-decoding cdc-low-level cdc-replica-identity-index
+.PHONY: cdc-catchup-segment-gap
 .PHONY: follow-wal2json follow-9.6
 .PHONY: endpos-in-multi-wal-txn

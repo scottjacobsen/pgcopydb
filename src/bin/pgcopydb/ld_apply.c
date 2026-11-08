@@ -96,9 +96,33 @@ stream_apply_catchup(StreamSpecs *specs)
 		 * It might be the expected file doesn't exist already, in that case
 		 * exit successfully so that the main process may switch from catchup
 		 * mode to replay mode.
+		 *
+		 * The first change received after the slot's consistent point may
+		 * have been written to a later WAL segment than the one holding the
+		 * start LSN, in which case the expected file was never created while
+		 * the files that follow it exist. Skip ahead to the first existing
+		 * file instead of concluding that we have caught up, which would
+		 * leave those files unapplied.
 		 */
 		if (!file_exists(context.sqlFileName))
 		{
+			bool found = false;
+
+			if (!stream_apply_next_existing_file(&context, &found))
+			{
+				/* errors have already been logged */
+				(void) stream_apply_cleanup(&context);
+				return false;
+			}
+
+			if (found)
+			{
+				log_info("File \"%s\" does not exist, skipping ahead to \"%s\"",
+						 currentSQLFileName,
+						 context.sqlFileName);
+				continue;
+			}
+
 			log_info("File \"%s\" does not exists yet, exit",
 					 context.sqlFileName);
 
@@ -1394,6 +1418,76 @@ stream_apply_init_context(StreamApplyContext *context,
 	context->connStrings = connStrings;
 
 	strlcpy(context->origin, origin, sizeof(context->origin));
+
+	return true;
+}
+
+
+/*
+ * stream_apply_next_existing_file looks for the first SQL file after the one
+ * currently expected, up to the latest file the streaming process wrote, and
+ * points the context at it when there is one.
+ */
+bool
+stream_apply_next_existing_file(StreamApplyContext *context, bool *found)
+{
+	*found = false;
+
+	char latest[MAXPGPATH] = { 0 };
+	char latestFile[MAXPGPATH] = { 0 };
+
+	sformat(latest, sizeof(latest), "%s/latest", context->paths.dir);
+
+	if (!file_exists(latest))
+	{
+		return true;
+	}
+
+	if (!normalize_filename(latest, latestFile, sizeof(latestFile)))
+	{
+		/* errors have already been logged */
+		return false;
+	}
+
+	/* latestFile is <dir>/<wal>.json: keep only the WAL file name */
+	char *base = strrchr(latestFile, '/');
+	base = base == NULL ? latestFile : base + 1;
+
+	char latestWal[MAXPGPATH] = { 0 };
+	strlcpy(latestWal, base, sizeof(latestWal));
+
+	char *dot = strchr(latestWal, '.');
+
+	if (dot != NULL)
+	{
+		*dot = '\0';
+	}
+
+	TimeLineID tli = 0;
+	XLogSegNo latestSegno = 0;
+	XLogSegNo segno = 0;
+
+	XLogFromFileName(latestWal, &tli, &latestSegno, context->WalSegSz);
+	XLogFromFileName(context->wal, &tli, &segno, context->WalSegSz);
+
+	for (XLogSegNo s = segno + 1; s <= latestSegno; s++)
+	{
+		char wal[MAXPGPATH] = { 0 };
+		char sqlFileName[MAXPGPATH] = { 0 };
+
+		XLogFileName(wal, context->system.timeline, s, context->WalSegSz);
+		sformat(sqlFileName, sizeof(sqlFileName), "%s/%s.sql",
+				context->paths.dir, wal);
+
+		if (file_exists(sqlFileName))
+		{
+			strlcpy(context->wal, wal, sizeof(context->wal));
+			strlcpy(context->sqlFileName, sqlFileName,
+					sizeof(context->sqlFileName));
+			*found = true;
+			return true;
+		}
+	}
 
 	return true;
 }

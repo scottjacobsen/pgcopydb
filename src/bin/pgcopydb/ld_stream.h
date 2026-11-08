@@ -777,6 +777,7 @@ bool stream_apply_init_context(StreamApplyContext *context,
 bool setupReplicationOrigin(StreamApplyContext *context);
 
 bool computeSQLFileName(StreamApplyContext *context);
+bool stream_apply_next_existing_file(StreamApplyContext *context, bool *found);
 
 bool parseSQLAction(const char *query, LogicalMessageMetadata *metadata);
 
