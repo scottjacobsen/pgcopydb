@@ -1001,11 +1001,11 @@ struct FilteringQueries listSourceTablesSQL[] = {
 
 		"              where x.indrelid = c.oid"
 		"                and (indisprimary or indisunique)"
-		"                and array_length(indkey::integer[], 1) = 1"
-		"                and atttypid in ('smallint'::regtype,"
+				"                and atttypid in ('smallint'::regtype,"
 		"                                 'int'::regtype,"
 		"                                 'bigint'::regtype)"
-		"           order by not indisprimary, not indisunique"
+		"           order by not indisprimary, not indisunique,"
+		"                    array_length(indkey::integer[], 1)"
 		"              limit 1"
 		"         ) as pkeys on true"
 
@@ -1099,11 +1099,11 @@ struct FilteringQueries listSourceTablesSQL[] = {
 
 		"              where x.indrelid = c.oid"
 		"                and (indisprimary or indisunique)"
-		"                and array_length(indkey::integer[], 1) = 1"
-		"                and atttypid in ('smallint'::regtype,"
+				"                and atttypid in ('smallint'::regtype,"
 		"                                 'int'::regtype,"
 		"                                 'bigint'::regtype)"
-		"           order by not indisprimary, not indisunique"
+		"           order by not indisprimary, not indisunique,"
+		"                    array_length(indkey::integer[], 1)"
 		"              limit 1"
 		"         ) as pkeys on true"
 
@@ -1203,11 +1203,11 @@ struct FilteringQueries listSourceTablesSQL[] = {
 
 		"              where x.indrelid = c.oid"
 		"                and (indisprimary or indisunique)"
-		"                and array_length(indkey::integer[], 1) = 1"
-		"                and atttypid in ('smallint'::regtype,"
+				"                and atttypid in ('smallint'::regtype,"
 		"                                 'int'::regtype,"
 		"                                 'bigint'::regtype)"
-		"           order by not indisprimary, not indisunique"
+		"           order by not indisprimary, not indisunique,"
+		"                    array_length(indkey::integer[], 1)"
 		"              limit 1"
 		"         ) as pkeys on true"
 
@@ -1302,11 +1302,11 @@ struct FilteringQueries listSourceTablesSQL[] = {
 
 		"              where x.indrelid = c.oid"
 		"                and (indisprimary or indisunique)"
-		"                and array_length(indkey::integer[], 1) = 1"
-		"                and atttypid in ('smallint'::regtype,"
+				"                and atttypid in ('smallint'::regtype,"
 		"                                 'int'::regtype,"
 		"                                 'bigint'::regtype)"
-		"           order by not indisprimary, not indisunique"
+		"           order by not indisprimary, not indisunique,"
+		"                    array_length(indkey::integer[], 1)"
 		"              limit 1"
 		"         ) as pkeys on true"
 
@@ -1404,11 +1404,11 @@ struct FilteringQueries listSourceTablesSQL[] = {
 
 		"              where x.indrelid = c.oid"
 		"                and (indisprimary or indisunique)"
-		"                and array_length(indkey::integer[], 1) = 1"
-		"                and atttypid in ('smallint'::regtype,"
+				"                and atttypid in ('smallint'::regtype,"
 		"                                 'int'::regtype,"
 		"                                 'bigint'::regtype)"
-		"           order by not indisprimary, not indisunique"
+		"           order by not indisprimary, not indisunique,"
+		"                    array_length(indkey::integer[], 1)"
 		"              limit 1"
 		"         ) as pkeys on true"
 
