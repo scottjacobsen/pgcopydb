@@ -428,6 +428,15 @@ bool schema_list_ordinary_tables(PGSQL *pgsql,
 								 bool estimateTableSizes,
 								 DatabaseCatalog *catalog);
 
+bool schema_list_table_by_name(PGSQL *pgsql,
+							   const char *nspname,
+							   const char *relname,
+							   SourceTable *table);
+bool schema_table_belongs_to_extension(PGSQL *pgsql,
+									   const char *nspname,
+									   const char *relname,
+									   bool *belongs);
+
 bool schema_list_partitions(PGSQL *pgsql,
 							DatabaseCatalog *catalog,
 							SourceTable *table,

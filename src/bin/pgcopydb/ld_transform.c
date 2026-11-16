@@ -61,6 +61,9 @@ static bool markGeneratedColumnsFromStatement(GeneratedColumnsCache *cache,
 
 static bool prepareGeneratedColumnsCache_hook(void *ctx, SourceTable *table);
 
+static bool addGeneratedColumnsCacheEntry(StreamContext *privateContext,
+										  SourceTable *table);
+
 static bool prepareGeneratedColumnsCache(StreamSpecs *specs);
 
 static bool isGeneratedColumn(GeneratedColumnSet *columns, const char *attname);
@@ -1391,10 +1394,11 @@ parseMessage(StreamContext *privateContext, char *message, JSON_Value *json)
 			/*
 			 * Plugin parsers may decide after inspecting the table
 			 * name that a DML message must be dropped — e.g. the
-			 * relation is absent from the local catalog (unmapped
-			 * extension table such as partman.part_config). Honor the
-			 * filterOut flag the parser sets instead of appending a
-			 * half-populated statement.
+			 * relation belongs to the pgcopydb schema, or is absent
+			 * from the local catalog and the source lists it as an
+			 * extension table (such as partman.part_config). Honor
+			 * the filterOut flag the parser sets instead of appending
+			 * a half-populated statement.
 			 */
 			if (metadata->filterOut)
 			{
@@ -2800,6 +2804,17 @@ prepareGeneratedColumnsCache_hook(void *ctx, SourceTable *table)
 		return false;
 	}
 
+	return addGeneratedColumnsCacheEntry(privateContext, table);
+}
+
+
+/*
+ * addGeneratedColumnsCacheEntry adds the given table and its generated
+ * columns to the GeneratedColumnsCache.
+ */
+static bool
+addGeneratedColumnsCacheEntry(StreamContext *privateContext, SourceTable *table)
+{
 	GeneratedColumnsCache *item = (GeneratedColumnsCache *)
 								  calloc(1, sizeof(GeneratedColumnsCache));
 
@@ -2848,6 +2863,61 @@ prepareGeneratedColumnsCache_hook(void *ctx, SourceTable *table)
 			 item);
 
 	return true;
+}
+
+
+/*
+ * stream_transform_refresh_generated_columns replaces the GeneratedColumnsCache
+ * entry of the given table, whose attributes have just been fetched from the
+ * source, so that a table created or a column generated after the transform
+ * started is skipped in the SQL output like the others.
+ */
+bool
+stream_transform_refresh_generated_columns(StreamContext *privateContext,
+										   SourceTable *table)
+{
+	GeneratedColumnsCache_Lookup key = { 0 };
+
+	NORMALIZED_PG_NAMEDATA_COPY(key.nspname, table->nspname);
+	NORMALIZED_PG_NAMEDATA_COPY(key.relname, table->relname);
+
+	GeneratedColumnsCache *item = NULL;
+
+	HASH_FIND(hh,
+			  privateContext->generatedColumnsCache,
+			  &key,
+			  sizeof(GeneratedColumnsCache_Lookup),
+			  item);
+
+	if (item != NULL)
+	{
+		GeneratedColumnSet *column = NULL;
+		GeneratedColumnSet *tmp = NULL;
+
+		HASH_ITER(hh, item->columns, column, tmp)
+		{
+			HASH_DEL(item->columns, column);
+			free(column);
+		}
+
+		HASH_DEL(privateContext->generatedColumnsCache, item);
+		free(item);
+	}
+
+	bool hasGeneratedColumns = false;
+
+	for (int i = 0; i < table->attributes.count; i++)
+	{
+		hasGeneratedColumns =
+			hasGeneratedColumns || table->attributes.array[i].attisgenerated;
+	}
+
+	if (!hasGeneratedColumns)
+	{
+		return true;
+	}
+
+	return addGeneratedColumnsCacheEntry(privateContext, table);
 }
 
 

@@ -1199,7 +1199,7 @@ catalog_begin(DatabaseCatalog *catalog, bool immediate)
 			/* we have milliseconds, pg_usleep() wants microseconds */
 			(void) pg_usleep(sleepTimeMs * 1000);
 
-			rc = sqlite3_exec(catalog->db, "BEGIN", NULL, NULL, NULL);
+			rc = sqlite3_exec(catalog->db, sql, NULL, NULL, NULL);
 		}
 	}
 
@@ -7432,7 +7432,7 @@ catalog_upsert_process_info(DatabaseCatalog *catalog, ProcessInfo *ps)
 
 
 /*
- * catalog_delete_s_table deletes an s_table entry for the given oid.
+ * catalog_delete_process deletes a process entry for the given pid.
  */
 bool
 catalog_delete_process(DatabaseCatalog *catalog, pid_t pid)

@@ -87,6 +87,27 @@ static TestDecodingTableCache * lookupOrCacheSourceTable(StreamContext *privateC
 														 const char *nspname,
 														 const char *relname);
 
+static TestDecodingTableCache * refreshSourceTable(StreamContext *privateContext,
+												   const char *nspname,
+												   const char *relname);
+
+static TestDecodingTableCache * cacheSourceTable(StreamContext *privateContext,
+												 const char *nspname,
+												 const char *relname,
+												 SourceTable *table);
+
+static TestDecodingTableCache * cacheAbsentSourceTable(StreamContext *privateContext,
+													   const char *nspname,
+													   const char *relname);
+
+static bool ensureSourceTableCached(StreamContext *privateContext,
+									const char *nspname,
+									const char *relname);
+
+static void dropCachedSourceTable(StreamContext *privateContext,
+								  const char *nspname,
+								  const char *relname);
+
 
 static bool findIdentifierEndPos(const char *message, char separator, int *position);
 
@@ -496,6 +517,14 @@ parseTestDecodingInsertMessage(StreamContext *privateContext,
 							   TestDecodingHeader *header)
 {
 	LogicalTransactionStatement *stmt = privateContext->stmt;
+
+	if (!ensureSourceTableCached(privateContext,
+								 header->table.nspname,
+								 header->table.relname))
+	{
+		/* errors have already been logged */
+		return false;
+	}
 
 	stmt->stmt.insert.new.count = 1;
 	stmt->stmt.insert.new.array =
@@ -1140,28 +1169,41 @@ prepareUpdateTuppleArrays(StreamContext *privateContext,
 								 header->table.nspname,
 								 header->table.relname);
 
+	/*
+	 * A table absent from our catalog may have been created on the source
+	 * after follow started: fetch its definition from the source, once. A
+	 * table the source lists as owned by an extension is then cached with a
+	 * zero oid.
+	 */
+	if (cached == NULL && privateContext->metadata.filterOut)
+	{
+		cached = refreshSourceTable(privateContext,
+									header->table.nspname,
+									header->table.relname);
+	}
+
 	if (cached == NULL)
 	{
-		/*
-		 * A NULL cache entry combined with metadata.filterOut means the
-		 * table is absent from our local catalog -- typically an extension
-		 * table the clone phase skipped (e.g. partman.part_config with
-		 * --skip-extensions). Drop the DML and continue rather than abort
-		 * the follow stream. Any other NULL is a hard error.
-		 */
-		if (privateContext->metadata.filterOut)
-		{
-			log_warn("Ignoring %c message for table \"%s\".\"%s\" which is "
-					 "not in our catalog (likely an excluded or unmapped "
-					 "extension table)",
-					 header->action,
-					 header->table.nspname,
-					 header->table.relname);
-			return true;
-		}
-
 		/* errors have already been logged */
 		return false;
+	}
+
+	if (cached->oid == 0)
+	{
+		/*
+		 * A zero oid means the table is absent from our local catalog and
+		 * belongs to an extension on the source -- typically a table the
+		 * clone phase skipped (e.g. partman.part_config with
+		 * --skip-extensions). Drop the DML and continue rather than abort
+		 * the follow stream.
+		 */
+		log_warn("Ignoring %c message for table \"%s\".\"%s\" which is "
+				 "not in our catalog and belongs to an extension",
+				 header->action,
+				 header->table.nspname,
+				 header->table.relname);
+		privateContext->metadata.filterOut = true;
+		return true;
 	}
 
 	int columnCount = cols->values.array[0].cols;
@@ -1169,6 +1211,7 @@ prepareUpdateTuppleArrays(StreamContext *privateContext,
 
 	int oldCount = 0;
 	int newCount = 0;
+	bool refreshed = false;
 
 	if (0 < columnCount)
 	{
@@ -1187,11 +1230,54 @@ prepareUpdateTuppleArrays(StreamContext *privateContext,
 			TestDecodingAttrCache *attribute = NULL;
 			HASH_FIND_STR(cached->attrs, attr->attname, attribute);
 
+			/*
+			 * An attribute absent from our catalog may have been added on
+			 * the source after follow started: fetch the table definition
+			 * again, once per message, and classify the columns again from
+			 * the start against the new definition.
+			 */
+			if (attribute == NULL && !refreshed)
+			{
+				refreshed = true;
+
+				cached = refreshSourceTable(privateContext,
+											header->table.nspname,
+											header->table.relname);
+
+				if (cached == NULL)
+				{
+					/* errors have already been logged */
+					free(pkeyArray);
+					return false;
+				}
+
+				if (cached->oid == 0)
+				{
+					log_warn("Ignoring %c message for table \"%s\".\"%s\" "
+							 "which is not in our catalog and belongs to an "
+							 "extension",
+							 header->action,
+							 header->table.nspname,
+							 header->table.relname);
+					privateContext->metadata.filterOut = true;
+					free(pkeyArray);
+					return true;
+				}
+
+				oldCount = 0;
+				newCount = 0;
+				memset(pkeyArray, 0, columnCount * sizeof(bool));
+
+				c = -1;
+				continue;
+			}
+
 			if (attribute == NULL)
 			{
 				log_error("Failed to lookup table \"%s\".\"%s\" attribute "
 						  "\"%s\" in our internal catalogs",
 						  cached->nspname, cached->relname, attr->attname);
+				free(pkeyArray);
 				return false;
 			}
 
@@ -1226,6 +1312,7 @@ prepareUpdateTuppleArrays(StreamContext *privateContext,
 		log_error("Failed to parse decoding message for UPDATE on "
 				  "table \"%s\".\"%s\": WHERE clause columns not found",
 				  cached->nspname, cached->relname);
+		free(pkeyArray);
 		return false;
 	}
 
@@ -1234,6 +1321,7 @@ prepareUpdateTuppleArrays(StreamContext *privateContext,
 		log_error("Failed to parse decoding message for UPDATE on "
 				  "table \"%s\".\"%s\": SET clause columns not found",
 				  cached->nspname, cached->relname);
+		free(pkeyArray);
 		return false;
 	}
 
@@ -1296,8 +1384,15 @@ prepareUpdateTuppleArrays(StreamContext *privateContext,
 /*
  * lookupOrCacheSourceTable returns a per-process cached TestDecodingTableCache
  * entry for (nspname, relname), populating it from the SQLite catalog on first
- * use. The cache lives for the lifetime of the transform process and is never
- * invalidated -- schema changes during follow are not supported by pgcopydb.
+ * use. The cache lives for the lifetime of the transform process and is only
+ * invalidated by refreshSourceTable, when a message references a table or an
+ * attribute the catalog does not know about.
+ *
+ * An entry with a zero oid is a table that refreshSourceTable found owned by
+ * an extension on the source: it is returned as-is so that the caller drops
+ * the message without fetching from the source again. A NULL return with
+ * metadata.filterOut set means the SQLite catalog does not have the table
+ * and the source has not been asked yet.
  */
 static TestDecodingTableCache *
 lookupOrCacheSourceTable(StreamContext *privateContext,
@@ -1305,11 +1400,10 @@ lookupOrCacheSourceTable(StreamContext *privateContext,
 						 const char *relname)
 {
 	/*
-	 * Defensively clear filterOut so the (NULL return, filterOut == true)
-	 * "table absent from catalog, drop the DML" contract with our caller is
-	 * not poisoned by a stale value set earlier on the same message. We are
-	 * the only writer to filterOut in this code path today, but the contract
-	 * is fragile if that ever changes.
+	 * Clear filterOut so the (NULL return, filterOut == true) "table absent
+	 * from catalog, ask the source" contract with our callers is not
+	 * poisoned by a stale value set earlier on the same message. The callers
+	 * set filterOut again themselves when they decide to drop the message.
 	 */
 	privateContext->metadata.filterOut = false;
 
@@ -1361,44 +1455,280 @@ lookupOrCacheSourceTable(StreamContext *privateContext,
 		return NULL;
 	}
 
-	item = (TestDecodingTableCache *) calloc(1, sizeof(TestDecodingTableCache));
+	item = cacheSourceTable(privateContext, nspname, relname, &table);
 
-	if (item == NULL)
+	free(table.attributes.array);
+
+	return item;
+}
+
+
+/*
+ * refreshSourceTable fetches the current definition of (nspname, relname)
+ * from the source database into the per-process caches (the table cache and
+ * the generated columns cache) and returns the table cache entry, which has a
+ * zero oid when the table belongs to an extension on the source. It returns
+ * NULL on failure, including when the source does not have the table at all.
+ *
+ * The SQLite catalog is left untouched: it is shared with the other follow
+ * processes and lists the tables selected for the copy, so a restarted
+ * transform simply asks the source again on its next miss. Attributes the
+ * source definition does not have anymore stay in the cache, so that queued
+ * messages still carrying them can be parsed.
+ */
+static TestDecodingTableCache *
+refreshSourceTable(StreamContext *privateContext,
+				   const char *nspname,
+				   const char *relname)
+{
+	ConnStrings *connStrings = privateContext->connStrings;
+
+	privateContext->metadata.filterOut = false;
+
+	if (connStrings == NULL || connStrings->source_pguri == NULL)
 	{
-		log_error(ALLOCATION_FAILED_ERROR);
+		log_error("Failed to refresh table \"%s\".\"%s\" definition: "
+				  "no source connection string",
+				  nspname, relname);
 		return NULL;
 	}
 
-	strlcpy(item->nspname, nspname, sizeof(item->nspname));
-	strlcpy(item->relname, relname, sizeof(item->relname));
-	item->oid = table.oid;
+	log_info("Refreshing table \"%s\".\"%s\" definition from the source "
+			 "database: its logical message does not match our catalog",
+			 nspname, relname);
 
-	for (int i = 0; i < table.attributes.count; i++)
+	PGSQL src = { 0 };
+	SourceTable table = { 0 };
+
+	if (!pgsql_init(&src, connStrings->source_pguri, PGSQL_CONN_SOURCE) ||
+		!schema_list_table_by_name(&src, nspname, relname, &table))
 	{
-		SourceTableAttribute *src = &(table.attributes.array[i]);
+		/* errors have already been logged */
+		return NULL;
+	}
 
-		TestDecodingAttrCache *attr =
-			(TestDecodingAttrCache *) calloc(1, sizeof(TestDecodingAttrCache));
+	if (table.oid == 0)
+	{
+		bool belongsToExtension = false;
 
-		if (attr == NULL)
+		if (!schema_table_belongs_to_extension(&src, nspname, relname,
+											   &belongsToExtension))
+		{
+			/* errors have already been logged */
+			return NULL;
+		}
+
+		if (!belongsToExtension)
+		{
+			log_error("Failed to refresh table \"%s\".\"%s\" definition: "
+					  "the source database does not list it",
+					  nspname, relname);
+			return NULL;
+		}
+
+		log_warn("Table \"%s\".\"%s\" belongs to an extension on the source "
+				 "database, its messages are ignored from now on",
+				 nspname, relname);
+
+		dropCachedSourceTable(privateContext, nspname, relname);
+
+		return cacheAbsentSourceTable(privateContext, nspname, relname);
+	}
+
+	TestDecodingTableCache *cached =
+		cacheSourceTable(privateContext, nspname, relname, &table);
+
+	bool ok =
+		cached != NULL &&
+		stream_transform_refresh_generated_columns(privateContext, &table);
+
+	free(table.attributes.array);
+
+	return ok ? cached : NULL;
+}
+
+
+/*
+ * cacheSourceTable adds the given table definition to the per-process cache,
+ * or merges it into the existing entry for (nspname, relname): attributes are
+ * matched by name, and the ones only the cache knows about are kept.
+ */
+static TestDecodingTableCache *
+cacheSourceTable(StreamContext *privateContext,
+				 const char *nspname,
+				 const char *relname,
+				 SourceTable *table)
+{
+	TestDecodingTableCache lookup = { 0 };
+	strlcpy(lookup.nspname, nspname, sizeof(lookup.nspname));
+	strlcpy(lookup.relname, relname, sizeof(lookup.relname));
+
+	unsigned keylen = offsetof(TestDecodingTableCache, relname) +
+					  sizeof(lookup.relname) -
+					  offsetof(TestDecodingTableCache, nspname);
+
+	TestDecodingTableCache *item = NULL;
+	HASH_FIND(hh,
+			  privateContext->testDecodingTableCache,
+			  &lookup.nspname,
+			  keylen,
+			  item);
+
+	if (item == NULL)
+	{
+		item = (TestDecodingTableCache *) calloc(1, sizeof(TestDecodingTableCache));
+
+		if (item == NULL)
 		{
 			log_error(ALLOCATION_FAILED_ERROR);
 			return NULL;
 		}
 
-		strlcpy(attr->attname, src->attname, sizeof(attr->attname));
+		strlcpy(item->nspname, nspname, sizeof(item->nspname));
+		strlcpy(item->relname, relname, sizeof(item->relname));
+
+		HASH_ADD(hh,
+				 privateContext->testDecodingTableCache,
+				 nspname,
+				 keylen,
+				 item);
+	}
+
+	item->oid = table->oid;
+
+	for (int i = 0; i < table->attributes.count; i++)
+	{
+		SourceTableAttribute *src = &(table->attributes.array[i]);
+
+		TestDecodingAttrCache *attr = NULL;
+		HASH_FIND_STR(item->attrs, src->attname, attr);
+
+		if (attr == NULL)
+		{
+			attr = (TestDecodingAttrCache *) calloc(1, sizeof(TestDecodingAttrCache));
+
+			if (attr == NULL)
+			{
+				log_error(ALLOCATION_FAILED_ERROR);
+				return NULL;
+			}
+
+			strlcpy(attr->attname, src->attname, sizeof(attr->attname));
+
+			HASH_ADD_STR(item->attrs, attname, attr);
+		}
+
 		attr->attnum = src->attnum;
 		attr->attisprimary = src->attisprimary;
 		attr->attisreplident = src->attisreplident;
-
-		HASH_ADD_STR(item->attrs, attname, attr);
 	}
+
+	return item;
+}
+
+
+/*
+ * ensureSourceTableCached makes sure the per-process caches know the table of
+ * an INSERT message, asking the source when neither the cache nor the catalog
+ * has it, so that a table created after the transform started has its
+ * generated columns skipped like the others. Messages already filtered out
+ * are left alone.
+ */
+static bool
+ensureSourceTableCached(StreamContext *privateContext,
+						const char *nspname,
+						const char *relname)
+{
+	if (privateContext->metadata.filterOut)
+	{
+		return true;
+	}
+
+	TestDecodingTableCache *cached =
+		lookupOrCacheSourceTable(privateContext, nspname, relname);
+
+	if (cached == NULL && privateContext->metadata.filterOut)
+	{
+		cached = refreshSourceTable(privateContext, nspname, relname);
+	}
+
+	return cached != NULL;
+}
+
+
+/*
+ * cacheAbsentSourceTable adds a zero-oid entry for (nspname, relname) to the
+ * per-process cache and returns it.
+ */
+static TestDecodingTableCache *
+cacheAbsentSourceTable(StreamContext *privateContext,
+					   const char *nspname,
+					   const char *relname)
+{
+	TestDecodingTableCache *absent =
+		(TestDecodingTableCache *) calloc(1, sizeof(TestDecodingTableCache));
+
+	if (absent == NULL)
+	{
+		log_error(ALLOCATION_FAILED_ERROR);
+		return NULL;
+	}
+
+	strlcpy(absent->nspname, nspname, sizeof(absent->nspname));
+	strlcpy(absent->relname, relname, sizeof(absent->relname));
+
+	unsigned keylen = offsetof(TestDecodingTableCache, relname) +
+					  sizeof(absent->relname) -
+					  offsetof(TestDecodingTableCache, nspname);
 
 	HASH_ADD(hh,
 			 privateContext->testDecodingTableCache,
 			 nspname,
 			 keylen,
-			 item);
+			 absent);
 
-	return item;
+	return absent;
+}
+
+
+/*
+ * dropCachedSourceTable removes the per-process cache entry for (nspname,
+ * relname), if any, so that the next lookup reads the SQLite catalog again.
+ */
+static void
+dropCachedSourceTable(StreamContext *privateContext,
+					  const char *nspname,
+					  const char *relname)
+{
+	TestDecodingTableCache lookup = { 0 };
+	strlcpy(lookup.nspname, nspname, sizeof(lookup.nspname));
+	strlcpy(lookup.relname, relname, sizeof(lookup.relname));
+
+	unsigned keylen = offsetof(TestDecodingTableCache, relname) +
+					  sizeof(lookup.relname) -
+					  offsetof(TestDecodingTableCache, nspname);
+
+	TestDecodingTableCache *item = NULL;
+	HASH_FIND(hh,
+			  privateContext->testDecodingTableCache,
+			  &lookup.nspname,
+			  keylen,
+			  item);
+
+	if (item == NULL)
+	{
+		return;
+	}
+
+	TestDecodingAttrCache *attr = NULL;
+	TestDecodingAttrCache *tmp = NULL;
+
+	HASH_ITER(hh, item->attrs, attr, tmp)
+	{
+		HASH_DEL(item->attrs, attr);
+		free(attr);
+	}
+
+	HASH_DEL(privateContext->testDecodingTableCache, item);
+	free(item);
 }

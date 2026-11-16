@@ -109,6 +109,13 @@ typedef struct SourceTableArrayContext
 	bool parsedOk;
 } SourceTableArrayContext;
 
+typedef struct SourceTableContext
+{
+	char sqlstate[SQLSTATE_LENGTH];
+	SourceTable *table;
+	bool parsedOk;
+} SourceTableContext;
+
 
 /* Context used when fetching all the table size definitions */
 typedef struct SourceTableSizeArrayContext
@@ -192,6 +199,7 @@ static void getExtensionsVersions(void *ctx, PGresult *result);
 static void getCollationList(void *ctx, PGresult *result);
 
 static void getTableArray(void *ctx, PGresult *result);
+static void getSourceTable(void *ctx, PGresult *result);
 
 static bool parseCurrentSourceTable(PGresult *result,
 									int rowNumber,
@@ -1515,6 +1523,134 @@ schema_list_ordinary_tables(PGSQL *pgsql,
 		log_error("Failed to list tables");
 		return false;
 	}
+
+	return true;
+}
+
+
+/*
+ * schema_list_table_by_name fetches the current definition of a single
+ * ordinary table (including its attributes) from the source Postgres instance
+ * into the given SourceTable. The table oid is left to zero when the source
+ * does not list the table, which is the case of extension owned tables. It is
+ * used to refresh a table that changed after the initial listing, so it
+ * applies no source filters.
+ */
+bool
+schema_list_table_by_name(PGSQL *pgsql,
+						  const char *nspname,
+						  const char *relname,
+						  SourceTable *table)
+{
+	SourceTableContext context = { { 0 }, table, false };
+
+	log_trace("schema_list_table_by_name");
+
+	PQExpBuffer sql = createPQExpBuffer();
+
+	appendPQExpBuffer(sql,
+					  "select * from (%s) as t "
+					  " where t.nspname = $1 and t.relname = $2 "
+					  "   and t.relkind = 'r'",
+					  listSourceTablesSQL[SOURCE_FILTER_TYPE_NONE].sql);
+
+	if (PQExpBufferBroken(sql))
+	{
+		log_error("Failed to build SQL query: out of memory");
+		destroyPQExpBuffer(sql);
+		return false;
+	}
+
+	const Oid paramTypes[2] = { TEXTOID, TEXTOID };
+	const char *paramValues[2] = { nspname, relname };
+
+	bool ok = pgsql_execute_with_params(pgsql, sql->data,
+										2, paramTypes, paramValues,
+										&context, &getSourceTable);
+
+	destroyPQExpBuffer(sql);
+
+	if (!ok || !context.parsedOk)
+	{
+		log_error("Failed to list table \"%s\".\"%s\"", nspname, relname);
+		return false;
+	}
+
+	return true;
+}
+
+
+/*
+ * getSourceTable parses the single row of a schema_list_table_by_name query
+ * result into the context's SourceTable.
+ */
+static void
+getSourceTable(void *ctx, PGresult *result)
+{
+	SourceTableContext *context = (SourceTableContext *) ctx;
+
+	int nTuples = PQntuples(result);
+
+	if (PQnfields(result) != 13)
+	{
+		log_error("Query returned %d columns, expected 13", PQnfields(result));
+		context->parsedOk = false;
+		return;
+	}
+
+	if (nTuples > 1)
+	{
+		log_error("Query returned %d rows, expected at most 1", nTuples);
+		context->parsedOk = false;
+		return;
+	}
+
+	context->parsedOk =
+		nTuples == 0 || parseCurrentSourceTable(result, 0, context->table);
+}
+
+
+/*
+ * schema_table_belongs_to_extension checks whether the given table is owned
+ * by an extension on the source Postgres instance.
+ */
+bool
+schema_table_belongs_to_extension(PGSQL *pgsql,
+								  const char *nspname,
+								  const char *relname,
+								  bool *belongs)
+{
+	SingleValueResultContext parseContext = { { 0 }, PGSQL_RESULT_BOOL, false };
+
+	char *sql =
+		"select exists "
+		"  ( "
+		"    select 1 "
+		"      from pg_catalog.pg_depend d "
+		"      join pg_catalog.pg_class c on c.oid = d.objid "
+		"      join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+		"     where d.classid = 'pg_class'::regclass "
+		"       and d.deptype = 'e' "
+		"       and format('%I', n.nspname) = $1 "
+		"       and format('%I', c.relname) = $2 "
+		"  )";
+
+	int paramCount = 2;
+	Oid paramTypes[2] = { TEXTOID, TEXTOID };
+	const char *paramValues[2] = { nspname, relname };
+
+	if (!pgsql_execute_with_params(pgsql, sql,
+								   paramCount, paramTypes, paramValues,
+								   &parseContext, &parseSingleValueResult) ||
+		!parseContext.parsedOk)
+	{
+		log_error("Failed to check whether table \"%s\".\"%s\" belongs to "
+				  "an extension",
+				  nspname, relname);
+		return false;
+	}
+
+	*belongs = parseContext.boolVal;
 
 	return true;
 }
