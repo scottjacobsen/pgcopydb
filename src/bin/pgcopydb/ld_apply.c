@@ -45,6 +45,17 @@ GUC applySettings[] = {
 	{ NULL, NULL },
 };
 
+/*
+ * The apply connection settings that never change: they are sent once when
+ * the connection is set up. synchronous_commit is the only setting that
+ * changes from one transaction to the next, see stream_apply_sql.
+ */
+static GUC applySessionSettings[] = {
+	COMMON_GUC_SETTINGS,
+	{ "session_replication_role", "'replica'" },
+	{ NULL, NULL },
+};
+
 static bool readTxnCommitLSN(LogicalMessageMetadata *metadata, const char *dir,
 							 bool *txnCommitLSNFound);
 static bool parseTxnMetadataFile(const char *filename, LogicalMessageMetadata *metadata);
@@ -54,6 +65,8 @@ static bool computeTxnMetadataFilename(uint32_t xid, const char *dir, char *file
 static bool writeTxnCommitMetadata(LogicalMessageMetadata *mesg, const char *dir);
 
 static bool setupConnection(PGSQL *pgsql, StreamApplyContext *context);
+
+static bool rollbackTransaction(StreamApplyContext *context);
 
 /*
  * stream_apply_catchup catches up with SQL files that have been prepared by
@@ -732,10 +745,10 @@ stream_apply_sql(StreamApplyContext *context,
 				!context->continuedTxn &&
 				context->endpos <= metadata->txnCommitLSN;
 
-			GUC *settings =
+			ApplySynchronousCommit synchronousCommit =
 				commitLSNreachesEndPos || context->reachedEOF
-				? applySettingsSync
-				: applySettings;
+				? APPLY_SYNCHRONOUS_COMMIT_ON
+				: APPLY_SYNCHRONOUS_COMMIT_OFF;
 
 			if (commitLSNreachesEndPos)
 			{
@@ -745,11 +758,26 @@ stream_apply_sql(StreamApplyContext *context,
 						   LSN_FORMAT_ARGS(context->endpos));
 			}
 
-			if (!pgsql_set_gucs(applyPgConn, settings))
+			/*
+			 * The other apply settings were sent once when the connection
+			 * was set up; only send synchronous_commit when the session
+			 * does not have the wanted value already.
+			 */
+			if (context->synchronousCommit != synchronousCommit)
 			{
-				log_error("Failed to set the apply GUC settings, "
-						  "see above for details");
-				return false;
+				const char *sql =
+					synchronousCommit == APPLY_SYNCHRONOUS_COMMIT_ON
+					? "SET synchronous_commit TO on"
+					: "SET synchronous_commit TO off";
+
+				if (!pgsql_execute(applyPgConn, sql))
+				{
+					log_error("Failed to set synchronous_commit, "
+							  "see above for details");
+					return false;
+				}
+
+				context->synchronousCommit = synchronousCommit;
 			}
 
 			context->transactionInProgress = true;
@@ -759,15 +787,11 @@ stream_apply_sql(StreamApplyContext *context,
 
 		case STREAM_ACTION_ROLLBACK:
 		{
-			/* Rollback the transaction */
-			if (!pgsql_execute(applyPgConn, "ROLLBACK"))
+			if (!rollbackTransaction(context))
 			{
 				/* errors have already been logged */
 				return false;
 			}
-
-			/* Reset the transactionInProgress after abort */
-			context->transactionInProgress = false;
 
 			/* Reevaluate reachedStartPos after rollback */
 			context->reachedStartPos = false;
@@ -813,15 +837,12 @@ stream_apply_sql(StreamApplyContext *context,
 							   metadata->timestamp,
 							   LSN_FORMAT_ARGS(context->previousLSN));
 
-					/* Rollback the transaction */
-					if (!pgsql_execute(applyPgConn, "ROLLBACK"))
+					if (!rollbackTransaction(context))
 					{
 						/* errors have already been logged */
 						return false;
 					}
 
-					/* Reset the transactionInProgress after abort */
-					context->transactionInProgress = false;
 					context->continuedTxn = false;
 				}
 
@@ -906,15 +927,11 @@ stream_apply_sql(StreamApplyContext *context,
 						   LSN_FORMAT_ARGS(context->endpos),
 						   LSN_FORMAT_ARGS(context->previousLSN));
 
-				if (context->transactionInProgress)
+				if (context->transactionInProgress &&
+					!rollbackTransaction(context))
 				{
-					if (!pgsql_execute(applyPgConn, "ROLLBACK"))
-					{
-						/* errors have already been logged */
-						return false;
-					}
-
-					context->transactionInProgress = false;
+					/* errors have already been logged */
+					return false;
 				}
 
 				return true;
@@ -1211,6 +1228,27 @@ stream_apply_sql(StreamApplyContext *context,
 
 
 /*
+ * rollbackTransaction aborts the transaction in progress on the apply
+ * connection. A SET done within the transaction is rolled back too, so the
+ * synchronous_commit value of the session is unknown again.
+ */
+static bool
+rollbackTransaction(StreamApplyContext *context)
+{
+	if (!pgsql_execute(&(context->applyPgConn), "ROLLBACK"))
+	{
+		/* errors have already been logged */
+		return false;
+	}
+
+	context->transactionInProgress = false;
+	context->synchronousCommit = APPLY_SYNCHRONOUS_COMMIT_UNKNOWN;
+
+	return true;
+}
+
+
+/*
  * setupConnection sets up a connection to the target database.
  */
 static bool
@@ -1269,6 +1307,20 @@ setupReplicationOrigin(StreamApplyContext *context)
 		/* errors have already been logged */
 		return false;
 	}
+
+	/*
+	 * The apply settings are session settings: send them once per
+	 * connection, before entering pipeline mode. synchronous_commit is set
+	 * per transaction in stream_apply_sql, and unknown on a new connection.
+	 */
+	if (!pgsql_set_gucs(applyPgConn, applySessionSettings))
+	{
+		log_error("Failed to set the apply GUC settings, "
+				  "see above for details");
+		return false;
+	}
+
+	context->synchronousCommit = APPLY_SYNCHRONOUS_COMMIT_UNKNOWN;
 
 	/*
 	 * Establish a regular connection for operations requiring immediate

@@ -461,6 +461,14 @@ typedef struct LSNTracking
 	struct LSNTracking *previous;
 } LSNTracking;
 
+typedef enum
+{
+	APPLY_SYNCHRONOUS_COMMIT_UNKNOWN = 0,
+	APPLY_SYNCHRONOUS_COMMIT_OFF,
+	APPLY_SYNCHRONOUS_COMMIT_ON
+} ApplySynchronousCommit;
+
+
 /*
  * StreamApplyContext allows tracking the apply progress.
  */
@@ -500,6 +508,9 @@ typedef struct StreamApplyContext
 	bool reachedEOF;
 	bool transactionInProgress;
 	bool logSQL;
+
+	/* synchronous_commit value currently set on the apply connection */
+	ApplySynchronousCommit synchronousCommit;
 
 	char wal[MAXPGPATH];
 	char sqlFileName[MAXPGPATH];
