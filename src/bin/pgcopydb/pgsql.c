@@ -1477,6 +1477,11 @@ pgsql_execute_with_params(PGSQL *pgsql, const char *sql, int paramCount,
 									  NULL, NULL, 0);
 	}
 
+	if (pipelineMode)
+	{
+		++(pgsql->pipelineStmtCount);
+	}
+
 	/*
 	 * Use PQsetSingleRowMode(connection) to switch to select single-row mode
 	 * and fetch only one result at a time in memory. Works with query result
@@ -2029,6 +2034,7 @@ pgsql_sync_pipeline(PGSQL *pgsql)
 
 	/* update the last pipeline sync time */
 	pgsql->pipelineSyncTime = time(NULL);
+	pgsql->pipelineStmtCount = 0;
 
 	log_trace("Endof pipeline sync");
 
@@ -2083,6 +2089,7 @@ pgsql_prepare(PGSQL *pgsql, const char *name, const char *sql,
 	if (pipelineMode)
 	{
 		ok = PQsendPrepare(connection, name, sql, paramCount, paramTypes) != 0;
+		++(pgsql->pipelineStmtCount);
 	}
 	else
 	{
@@ -2186,6 +2193,7 @@ pgsql_execute_prepared(PGSQL *pgsql, const char *name,
 		ok = PQsendQueryPrepared(connection, name,
 								 paramCount, paramValues,
 								 NULL, NULL, 0) != 0;
+		++(pgsql->pipelineStmtCount);
 	}
 	else
 	{

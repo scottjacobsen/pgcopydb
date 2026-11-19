@@ -569,10 +569,16 @@ stream_apply_file(StreamApplyContext *context)
 		}
 
 
-		/* rate limit to 1 pipeline sync per second */
-		if ((metadata->action == STREAM_ACTION_COMMIT ||
-			 metadata->action == STREAM_ACTION_KEEPALIVE) &&
-			(1 < (time(NULL) - context->applyPgConn.pipelineSyncTime)))
+		/*
+		 * Rate limit to 1 pipeline sync per second, and sync after a bounded
+		 * number of statements so that a large transaction does not keep
+		 * the results of thousands of statements pending on the server.
+		 */
+		if (((metadata->action == STREAM_ACTION_COMMIT ||
+			  metadata->action == STREAM_ACTION_KEEPALIVE) &&
+			 (1 < (time(NULL) - context->applyPgConn.pipelineSyncTime))) ||
+			PGSQL_PIPELINE_SYNC_STATEMENTS <=
+			context->applyPgConn.pipelineStmtCount)
 		{
 			/* fetch results until done */
 			if (!pgsql_sync_pipeline(&(context->applyPgConn)))

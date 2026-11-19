@@ -157,6 +157,17 @@ stream_replay_line(void *ctx, const char *line, bool *stop)
 		return false;
 	}
 
+	/* sync after a bounded number of statements, whatever the action */
+	if (PGSQL_PIPELINE_SYNC_STATEMENTS <= context->applyPgConn.pipelineStmtCount)
+	{
+		if (!pgsql_sync_pipeline(&(context->applyPgConn)))
+		{
+			log_error("Failed to sync the pipeline, see previous "
+					  "error for details");
+			return false;
+		}
+	}
+
 	/* update progres on source database when needed */
 	switch (metadata.action)
 	{
